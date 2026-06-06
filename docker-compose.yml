@@ -1,0 +1,13 @@
+services:
+  tg-forward:
+    build: .
+    image: tg-forward
+    container_name: tg-forward
+    restart: unless-stopped
+    # 首次登录需要在终端输入手机号/验证码，保留 stdin/tty 以便 attach 交互
+    stdin_open: true
+    tty: true
+    volumes:
+      # 配置与登录会话都不打进镜像，运行时挂载进容器（容器内工作目录为 /app）
+      - ./config.json:/app/config.json
+      - ./.tdlib:/app/.tdlib

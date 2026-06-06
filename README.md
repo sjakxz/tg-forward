@@ -26,7 +26,47 @@
 
 > 说明：各 id 互相独立计时、互不影响；发送「1」是该 id 私聊则填用户 id，是群组则填群组 id。
 
-## 部署
+### 如何查 Chat ID
+
+程序每次启动登录成功后，会自动在日志中打印当前账号的**所有会话**（群组 / 频道 / 私聊）的名称、ID 和类型，方便照着填上面的配置：
+
+```
+===== 所有会话列表 (N) =====
+[频道] 某某频道 (id=-1001234567890)
+[超级群] 某某群 (id=-1009876543210)
+[私聊] 张三 (id=123456789)
+...
+===== 会话列表结束 =====
+```
+
+查看方式：`docker compose logs -f`（或 `docker logs -f tg-forward`）。
+
+## 部署（Docker Compose，推荐）
+
+仓库已提供 `docker-compose.yml`，`config.json` 与 `.tdlib` 登录会话均通过挂载注入、不打进镜像。
+
+首次登录（前台交互输入手机号 / 验证码，登录好后按 ctrl+c 退出）：
+
+```shell
+docker compose run --rm tg-forward
+```
+
+凭证已持久化在 `.tdlib` 目录，之后转为后台常驻：
+
+```shell
+docker compose up -d            # 后台启动
+docker compose logs -f          # 查看日志（含启动时的会话列表）
+```
+
+日常维护：
+
+```shell
+docker compose up -d --build    # 改了代码：重建镜像并重跑
+docker compose restart          # 只改了 config.json：重启即可（无需 build）
+docker compose down             # 停止并删除容器
+```
+
+## 部署（手动 docker 命令）
 
 ```shell
 sudo docker build -t tg-forward .
