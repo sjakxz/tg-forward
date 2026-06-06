@@ -1,0 +1,10 @@
+# 登录会话与数据库（含敏感认证信息）
+.tdlib/
+
+# 真实配置（含 api_hash / chat id），请基于 config.example.json 自行创建
+config.json
+
+# IDE 与系统杂项
+.idea/
+.DS_Store
+._*
