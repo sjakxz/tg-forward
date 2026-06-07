@@ -92,6 +92,37 @@ func main() {
 	go func() {
 		defer listener.Close()
 		for update := range listener.Updates {
+			// Read-receipt path: the recipient read up to last_read_outbox_message_id.
+			// If that's >= our session's first "1", consider the alert acknowledged.
+			if u, ok := update.(*client.UpdateChatReadOutbox); ok {
+				if alertSet[u.ChatId] {
+					alertMu.Lock()
+					s, exists := alertSessions[u.ChatId]
+					shouldStop := exists && s.watchMsgId != 0 && u.LastReadOutboxMessageId >= s.watchMsgId
+					alertMu.Unlock()
+					if shouldStop {
+						stopAlert(u.ChatId, "read receipt")
+					}
+				}
+				continue
+			}
+
+			// When the first "1" is confirmed by the server, swap its temporary
+			// id for the real one. Until this fires, watchMsgId stays 0 and the
+			// read-receipt branch above no-ops, so stale pre-session reads can't
+			// kill a fresh alert.
+			if u, ok := update.(*client.UpdateMessageSendSucceeded); ok {
+				if u.Message != nil && alertSet[u.Message.ChatId] {
+					alertMu.Lock()
+					if s, exists := alertSessions[u.Message.ChatId]; exists && s.pendingTmpId == u.OldMessageId {
+						s.watchMsgId = u.Message.Id
+						s.pendingTmpId = 0
+					}
+					alertMu.Unlock()
+				}
+				continue
+			}
+
 			newMsg, ok := update.(*client.UpdateNewMessage)
 			if !ok {
 				continue
@@ -102,8 +133,10 @@ func main() {
 
 			// An alert recipient replied (any incoming message) -> stop its alert loop.
 			// Skip outgoing messages, otherwise our own "1" sends would self-cancel.
+			// This is the fallback path; the primary trigger is the read-receipt
+			// handler below (UpdateChatReadOutbox).
 			if !msg.IsOutgoing && alertSet[msg.ChatId] {
-				stopAlert(msg.ChatId)
+				stopAlert(msg.ChatId, "got reply")
 			}
 
 			if !sourceSet[msg.ChatId] {
@@ -183,7 +216,16 @@ func main() {
 // alertSession identifies one running alert loop. The pointer is used as an
 // identity token so a finishing goroutine only cleans up its own map entry
 // (function values are not comparable, so a pointer is used instead).
-type alertSession struct{ cancel context.CancelFunc }
+//
+// watchMsgId is the server-assigned id of this session's first "1" — set by
+// the UpdateMessageSendSucceeded handler. When the recipient's read-outbox
+// pointer reaches it, the loop is cancelled. pendingTmpId holds the local
+// temporary id while the send is in flight.
+type alertSession struct {
+	cancel       context.CancelFunc
+	pendingTmpId int64
+	watchMsgId   int64
+}
 
 var (
 	alertMu       sync.Mutex
@@ -218,7 +260,7 @@ func runAlertLoop(ctx context.Context, c *client.Client, chatId int64, s *alertS
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for i := 0; i < 10; i++ {
-		_, err := c.SendMessage(&client.SendMessageRequest{
+		sent, err := c.SendMessage(&client.SendMessageRequest{
 			ChatId: chatId,
 			InputMessageContent: &client.InputMessageText{
 				Text: &client.FormattedText{Text: "1"},
@@ -228,6 +270,15 @@ func runAlertLoop(ctx context.Context, c *client.Client, chatId int64, s *alertS
 			log.Printf("Failed to send alert '1' to %d: %s", chatId, err)
 		} else {
 			log.Printf("Alert '1' sent to %d (%d/10)", chatId, i+1)
+			// Record the first "1"'s temporary id so the SendSucceeded handler
+			// can swap it for the server id we compare against read receipts.
+			if i == 0 && sent != nil {
+				alertMu.Lock()
+				if alertSessions[chatId] == s {
+					s.pendingTmpId = sent.Id
+				}
+				alertMu.Unlock()
+			}
 		}
 
 		select {
@@ -238,13 +289,14 @@ func runAlertLoop(ctx context.Context, c *client.Client, chatId int64, s *alertS
 	}
 }
 
-// stopAlert stops an alert loop for a chat id (called when it replies).
-func stopAlert(chatId int64) {
+// stopAlert stops an alert loop for a chat id. reason is logged so the two
+// trigger paths (read receipt / any reply) are distinguishable.
+func stopAlert(chatId int64, reason string) {
 	alertMu.Lock()
 	if s, ok := alertSessions[chatId]; ok {
 		s.cancel()
 		delete(alertSessions, chatId)
-		log.Printf("Alert for %d stopped (got reply)", chatId)
+		log.Printf("Alert for %d stopped (%s)", chatId, reason)
 	}
 	alertMu.Unlock()
 }
