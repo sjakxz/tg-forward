@@ -3,5 +3,7 @@
   "api_hash": "YOUR_API_HASH",
   "source_chat_ids": [-1001234567890],
   "target_chat_ids": [123456789],
-  "alert_chat_ids": [123456789]
+  "alert_chat_ids": [123456789],
+  "alert_interval_seconds": 60,
+  "alert_max_count": 10
 }

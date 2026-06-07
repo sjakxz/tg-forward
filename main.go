@@ -19,11 +19,13 @@ import (
 
 // Config holds the application configuration loaded from config.json
 type Config struct {
-	ApiId         int32   `mapstructure:"api_id"`
-	ApiHash       string  `mapstructure:"api_hash"`
-	SourceChatIds []int64 `mapstructure:"source_chat_ids"`
-	TargetChatIds []int64 `mapstructure:"target_chat_ids"`
-	AlertChatIds  []int64 `mapstructure:"alert_chat_ids"`
+	ApiId                int32   `mapstructure:"api_id"`
+	ApiHash              string  `mapstructure:"api_hash"`
+	SourceChatIds        []int64 `mapstructure:"source_chat_ids"`
+	TargetChatIds        []int64 `mapstructure:"target_chat_ids"`
+	AlertChatIds         []int64 `mapstructure:"alert_chat_ids"`
+	AlertIntervalSeconds int     `mapstructure:"alert_interval_seconds"`
+	AlertMaxCount        int     `mapstructure:"alert_max_count"`
 }
 
 func main() {
@@ -40,6 +42,14 @@ func main() {
 	if err := viper.Unmarshal(&cfg); err != nil {
 		log.Fatalf("Failed to unmarshal config: %s", err)
 	}
+
+	if cfg.AlertIntervalSeconds <= 0 {
+		cfg.AlertIntervalSeconds = 60
+	}
+	if cfg.AlertMaxCount <= 0 {
+		cfg.AlertMaxCount = 10
+	}
+	log.Printf("Alert interval: %ds, max count: %d", cfg.AlertIntervalSeconds, cfg.AlertMaxCount)
 
 	// Build source chat ID set for quick lookup
 	sourceSet := make(map[int64]bool)
@@ -188,7 +198,7 @@ func main() {
 
 			// Forward triggered: start (or reset) the "1" alert loop for each alert id.
 			for _, id := range cfg.AlertChatIds {
-				startAlert(tdlibClient, id)
+				startAlert(tdlibClient, id, cfg.AlertIntervalSeconds, cfg.AlertMaxCount)
 			}
 		}
 	}()
@@ -232,8 +242,9 @@ var (
 	alertSessions = map[int64]*alertSession{}
 )
 
-// startAlert starts (or resets) a 10-minute "1" alert loop for a chat id.
-func startAlert(c *client.Client, chatId int64) {
+// startAlert starts (or resets) a "1" alert loop for a chat id. intervalSeconds
+// and maxCount come from config; together they bound the alert window.
+func startAlert(c *client.Client, chatId int64, intervalSeconds, maxCount int) {
 	alertMu.Lock()
 	if old, ok := alertSessions[chatId]; ok {
 		old.cancel() // re-trigger: cancel the old loop and restart the timer
@@ -243,12 +254,12 @@ func startAlert(c *client.Client, chatId int64) {
 	alertSessions[chatId] = s
 	alertMu.Unlock()
 
-	go runAlertLoop(ctx, c, chatId, s)
+	go runAlertLoop(ctx, c, chatId, s, intervalSeconds, maxCount)
 }
 
-// runAlertLoop sends "1" immediately, then once per minute, 10 times total
-// (covering a 10-minute window), unless cancelled by a reply or a reset.
-func runAlertLoop(ctx context.Context, c *client.Client, chatId int64, s *alertSession) {
+// runAlertLoop sends "1" immediately, then once every intervalSeconds, maxCount
+// times total, unless cancelled by a reply or a reset.
+func runAlertLoop(ctx context.Context, c *client.Client, chatId int64, s *alertSession, intervalSeconds, maxCount int) {
 	defer func() {
 		alertMu.Lock()
 		if alertSessions[chatId] == s { // only clean up our own entry
@@ -257,9 +268,9 @@ func runAlertLoop(ctx context.Context, c *client.Client, chatId int64, s *alertS
 		alertMu.Unlock()
 	}()
 
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(time.Duration(intervalSeconds) * time.Second)
 	defer ticker.Stop()
-	for i := 0; i < 10; i++ {
+	for i := 0; i < maxCount; i++ {
 		sent, err := c.SendMessage(&client.SendMessageRequest{
 			ChatId: chatId,
 			InputMessageContent: &client.InputMessageText{
@@ -269,7 +280,7 @@ func runAlertLoop(ctx context.Context, c *client.Client, chatId int64, s *alertS
 		if err != nil {
 			log.Printf("Failed to send alert '1' to %d: %s", chatId, err)
 		} else {
-			log.Printf("Alert '1' sent to %d (%d/10)", chatId, i+1)
+			log.Printf("Alert '1' sent to %d (%d/%d)", chatId, i+1, maxCount)
 			// Record the first "1"'s temporary id so the SendSucceeded handler
 			// can swap it for the server id we compare against read receipts.
 			if i == 0 && sent != nil {
@@ -376,7 +387,7 @@ func flushAlbum(c *client.Client, cfg Config, albumId int64) {
 	}
 
 	for _, id := range cfg.AlertChatIds {
-		startAlert(c, id)
+		startAlert(c, id, cfg.AlertIntervalSeconds, cfg.AlertMaxCount)
 	}
 }
 
