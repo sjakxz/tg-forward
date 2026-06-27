@@ -26,6 +26,7 @@ type Config struct {
 	AlertChatIds         []int64 `mapstructure:"alert_chat_ids"`
 	AlertIntervalSeconds int     `mapstructure:"alert_interval_seconds"`
 	AlertMaxCount        int     `mapstructure:"alert_max_count"`
+	ChannelPollSeconds   int     `mapstructure:"channel_poll_seconds"`
 }
 
 func main() {
@@ -49,7 +50,11 @@ func main() {
 	if cfg.AlertMaxCount <= 0 {
 		cfg.AlertMaxCount = 10
 	}
-	log.Printf("Alert interval: %ds, max count: %d", cfg.AlertIntervalSeconds, cfg.AlertMaxCount)
+	if cfg.ChannelPollSeconds <= 0 {
+		cfg.ChannelPollSeconds = 30
+	}
+	log.Printf("Alert interval: %ds, max count: %d, channel poll: %ds",
+		cfg.AlertIntervalSeconds, cfg.AlertMaxCount, cfg.ChannelPollSeconds)
 
 	// Build source chat ID set for quick lookup
 	sourceSet := make(map[int64]bool)
@@ -117,6 +122,12 @@ func main() {
 		log.Printf("SetOption ignore_background_updates=false failed: %s", err)
 	}
 
+	// Any message older than this is from before we booted — almost certainly
+	// a historical message TDLib is replaying as part of the startup
+	// openChat/getChannelDifference catch-up. Forwarding those would spam
+	// targets with old content on every restart.
+	startTime := int32(time.Now().Unix())
+
 	listener := tdlibClient.GetListener()
 	go func() {
 		defer listener.Close()
@@ -158,6 +169,9 @@ func main() {
 			}
 
 			msg := newMsg.Message
+			if msg.Date < startTime {
+				continue // pre-boot message replayed by startup catch-up
+			}
 			log.Printf("New message from source chat %d, type: %s", msg.ChatId, msg.Content.MessageContentType())
 
 			// An alert recipient replied (any incoming message) -> stop its alert loop.
@@ -170,6 +184,17 @@ func main() {
 
 			if !sourceSet[msg.ChatId] {
 				continue
+			}
+
+			// Clear the unread badge on the user's other devices: we've taken
+			// responsibility for this message by forwarding it. force_read works
+			// regardless of whether TDLib considers the chat "opened".
+			if _, err := tdlibClient.ViewMessages(&client.ViewMessagesRequest{
+				ChatId:     msg.ChatId,
+				MessageIds: []int64{msg.Id},
+				ForceRead:  true,
+			}); err != nil {
+				log.Printf("ViewMessages %d/%d failed: %s", msg.ChatId, msg.Id, err)
 			}
 
 			// Build the source label "群名 · 发送者 · id" once, reused for all targets.
@@ -231,6 +256,22 @@ func main() {
 
 	printAllChats(tdlibClient)
 
+	// Mark every watched chat as opened so this session starts as a subscriber.
+	// Required by TDLib for supergroup/channel realtime updates; openChat on a
+	// previously-closed chat also triggers updates.getChannelDifference, which
+	// is what flushes any pending pts gap on the server side.
+	openedChats := openWatchedChats(tdlibClient, cfg)
+
+	// Telegram only push-broadcasts a channel's updates to sessions it
+	// considers actively subscribed. A one-shot openChat at startup is enough
+	// for the first batch, but the server then downgrades us once we go quiet
+	// — which is why messages used to arrive only when the user re-opened the
+	// chat on their phone. Periodically toggling closeChat→openChat re-runs
+	// updates.getChannelDifference and keeps this session on the broadcast list.
+	// Missed messages flow back through the normal UpdateNewMessage path.
+	pollCtx, stopPoller := context.WithCancel(context.Background())
+	go pollWatchedChats(pollCtx, tdlibClient, openedChats, time.Duration(cfg.ChannelPollSeconds)*time.Second)
+
 	log.Printf("Listening for messages from source chats...")
 
 	ch := make(chan os.Signal, 2)
@@ -238,8 +279,79 @@ func main() {
 	<-ch
 
 	log.Println("Shutting down...")
+	stopPoller()
+	for _, id := range openedChats {
+		if _, err := tdlibClient.CloseChat(&client.CloseChatRequest{ChatId: id}); err != nil {
+			log.Printf("CloseChat %d failed: %s", id, err)
+		}
+	}
 	tdlibClient.Close()
 	os.Exit(0)
+}
+
+// openWatchedChats calls openChat on every source chat so this session is
+// registered as a realtime subscriber for them. Alert chats are skipped on
+// purpose: we only send to them and listen for replies, and replies on
+// regular private/group chats are pushed without needing keepalive — the
+// broadcast-channel pts dance only matters for source channels we read from.
+// GetChat is called first to make sure TDLib has loaded the chat into memory;
+// openChat on an unknown id fails. Returns the ids that were successfully
+// opened so they can be closed on shutdown and toggled by pollWatchedChats.
+func openWatchedChats(c *client.Client, cfg Config) []int64 {
+	seen := make(map[int64]bool)
+	var ids []int64
+	for _, id := range cfg.SourceChatIds {
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+
+	var opened []int64
+	for _, id := range ids {
+		if _, err := c.GetChat(&client.GetChatRequest{ChatId: id}); err != nil {
+			log.Printf("GetChat %d failed (can't open): %s", id, err)
+			continue
+		}
+		if _, err := c.OpenChat(&client.OpenChatRequest{ChatId: id}); err != nil {
+			log.Printf("OpenChat %d failed: %s", id, err)
+			continue
+		}
+		opened = append(opened, id)
+		log.Printf("Opened chat %d for realtime updates", id)
+	}
+	return opened
+}
+
+// pollWatchedChats toggles closeChat→openChat on each watched chat every
+// interval, simulating the user re-opening the chat on a phone. openChat
+// only triggers updates.getChannelDifference on a closed→open transition,
+// so the close call is required — re-calling openChat alone is a no-op.
+// The getChannelDifference call is what tells the Telegram server "this
+// session is still actively subscribed", keeping it on the broadcast list
+// for that channel. Failures are non-fatal; the next tick retries.
+func pollWatchedChats(ctx context.Context, c *client.Client, chatIds []int64, interval time.Duration) {
+	if len(chatIds) == 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for _, id := range chatIds {
+				if _, err := c.CloseChat(&client.CloseChatRequest{ChatId: id}); err != nil {
+					log.Printf("Channel keepalive close %d failed: %s", id, err)
+					continue
+				}
+				if _, err := c.OpenChat(&client.OpenChatRequest{ChatId: id}); err != nil {
+					log.Printf("Channel keepalive open %d failed: %s", id, err)
+				}
+			}
+		}
+	}
 }
 
 // alertSession identifies one running alert loop. The pointer is used as an
