@@ -98,6 +98,25 @@ func main() {
 		log.Fatalf("NewClient error: %s", err)
 	}
 
+	// Keep this session marked as an active foreground client. Without this,
+	// TDLib defaults to "offline" and the Telegram server treats the session
+	// as a background secondary client — updates can be deferred until the
+	// account's primary device (e.g. the phone) comes online, which manifests
+	// as forwards/alerts only firing after the user unlocks their phone.
+	if _, err := tdlibClient.SetOption(&client.SetOptionRequest{
+		Name:  "online",
+		Value: &client.OptionValueBoolean{Value: true},
+	}); err != nil {
+		log.Printf("SetOption online=true failed: %s", err)
+	}
+	// Process every update even when the client isn't considered "in use".
+	if _, err := tdlibClient.SetOption(&client.SetOptionRequest{
+		Name:  "ignore_background_updates",
+		Value: &client.OptionValueBoolean{Value: false},
+	}); err != nil {
+		log.Printf("SetOption ignore_background_updates=false failed: %s", err)
+	}
+
 	listener := tdlibClient.GetListener()
 	go func() {
 		defer listener.Close()
