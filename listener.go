@@ -10,7 +10,9 @@ import (
 // startListener subscribes to the TDLib update stream in a background goroutine.
 // It returns immediately after spawning; the loop runs until the listener is
 // closed (which happens when the TDLib client is closed during shutdown).
-func startListener(c *client.Client, cfg Config, sourceSet, alertSet map[int64]bool) {
+// alertSourceSet is the optional white­list controlling which source chat ids
+// trigger alert_chat_ids. Empty set = every source triggers (legacy behavior).
+func startListener(c *client.Client, cfg Config, sourceSet, alertSet, alertSourceSet map[int64]bool) {
 	// Any message older than this is from before we booted — almost certainly
 	// a historical message TDLib is replaying as part of the startup
 	// openChat/getChannelDifference catch-up. Forwarding those would spam
@@ -119,8 +121,11 @@ func startListener(c *client.Client, cfg Config, sourceSet, alertSet map[int64]b
 			}
 
 			// Forward triggered: start (or reset) the "1" alert loop for each alert id.
-			for _, id := range cfg.AlertChatIds {
-				startAlert(c, id, cfg.AlertIntervalSeconds, cfg.AlertMaxCount)
+			// alertSourceSet is a whitelist — empty means every source triggers.
+			if len(alertSourceSet) == 0 || alertSourceSet[msg.ChatId] {
+				for _, id := range cfg.AlertChatIds {
+					startAlert(c, id, cfg.AlertIntervalSeconds, cfg.AlertMaxCount)
+				}
 			}
 		}
 	}()

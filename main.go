@@ -50,9 +50,20 @@ func main() {
 		alertSet[id] = true
 	}
 
+	// Build alert-source whitelist. Empty = every source triggers alerts.
+	alertSourceSet := make(map[int64]bool)
+	for _, id := range cfg.AlertSourceChatIds {
+		alertSourceSet[id] = true
+	}
+
 	log.Printf("Source chat IDs: %v", cfg.SourceChatIds)
 	log.Printf("Target chat IDs: %v", cfg.TargetChatIds)
 	log.Printf("Alert chat IDs: %v", cfg.AlertChatIds)
+	if len(alertSourceSet) > 0 {
+		log.Printf("Alert source whitelist: %v", cfg.AlertSourceChatIds)
+	} else {
+		log.Printf("Alert source whitelist: (empty — all source chats trigger alerts)")
+	}
 
 	tdlibParameters := &client.SetTdlibParametersRequest{
 		UseTestDc:           false,
@@ -104,7 +115,7 @@ func main() {
 		log.Printf("SetOption ignore_background_updates=false failed: %s", err)
 	}
 
-	startListener(tdlibClient, cfg, sourceSet, alertSet)
+	startListener(tdlibClient, cfg, sourceSet, alertSet, alertSourceSet)
 
 	me, err := tdlibClient.GetMe()
 	if err != nil {
