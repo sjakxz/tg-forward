@@ -1,13 +1,11 @@
 package main
 
 import (
-	"context"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
-	"time"
 
 	"github.com/spf13/viper"
 	"github.com/zelenin/go-tdlib/client"
@@ -130,8 +128,8 @@ func main() {
 	// chat on their phone. Periodically toggling closeChat→openChat re-runs
 	// updates.getChannelDifference and keeps this session on the broadcast list.
 	// Missed messages flow back through the normal UpdateNewMessage path.
-	pollCtx, stopPoller := context.WithCancel(context.Background())
-	go pollWatchedChats(pollCtx, tdlibClient, openedChats, time.Duration(cfg.ChannelPollSeconds)*time.Second)
+	// pollCtx, stopPoller := context.WithCancel(context.Background())
+	// go pollWatchedChats(pollCtx, tdlibClient, openedChats, time.Duration(cfg.ChannelPollSeconds)*time.Second)
 
 	log.Printf("Listening for messages from source chats...")
 
@@ -140,7 +138,7 @@ func main() {
 	<-ch
 
 	log.Println("Shutting down...")
-	stopPoller()
+	// stopPoller()
 	for _, id := range openedChats {
 		if _, err := tdlibClient.CloseChat(&client.CloseChatRequest{ChatId: id}); err != nil {
 			log.Printf("CloseChat %d failed: %s", id, err)
