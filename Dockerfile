@@ -29,7 +29,7 @@ RUN go build \
     -trimpath \
     -ldflags "-s -w" \
     -o app \
-    "./main.go" && \
+    . && \
     ls -lah
 
 
