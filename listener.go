@@ -63,7 +63,9 @@ func startListener(c *client.Client, cfg Config, sourceSet, alertSet, alertSourc
 			if msg.Date < startTime {
 				continue // pre-boot message replayed by startup catch-up
 			}
-			log.Printf("New message from source chat %d, type: %s", msg.ChatId, msg.Content.MessageContentType())
+			if sourceSet[msg.ChatId] {
+				log.Printf("New message from source chat %d, type: %s", msg.ChatId, msg.Content.MessageContentType())
+			}
 
 			// An alert recipient replied (any incoming message) -> stop its alert loop.
 			// Skip outgoing messages, otherwise our own "1" sends would self-cancel.
