@@ -85,7 +85,7 @@ func startListener(c *client.Client, cfg Config, sourceSet, alertSet, alertSourc
 			// Album (media group): an N-image message arrives as N separate messages
 			// sharing one MediaAlbumId. Buffer them and flush as one grouped album.
 			if msg.MediaAlbumId != 0 {
-				bufferAlbumMessage(c, cfg, int64(msg.MediaAlbumId), msg.Content, prefix)
+				bufferAlbumMessage(c, cfg, int64(msg.MediaAlbumId), msg.Content, prefix, shouldAlert(alertSourceSet, msg.ChatId))
 				continue
 			}
 
@@ -124,7 +124,7 @@ func startListener(c *client.Client, cfg Config, sourceSet, alertSet, alertSourc
 
 			// Forward triggered: start (or reset) the "1" alert loop for each alert id.
 			// alertSourceSet is a whitelist — empty means every source triggers.
-			if len(alertSourceSet) == 0 || alertSourceSet[msg.ChatId] {
+			if shouldAlert(alertSourceSet, msg.ChatId) {
 				for _, id := range cfg.AlertChatIds {
 					startAlert(c, id, cfg.AlertIntervalSeconds, cfg.AlertMaxCount)
 				}

@@ -28,6 +28,14 @@ var (
 	alertSessions = map[int64]*alertSession{}
 )
 
+// shouldAlert reports whether a message from sourceChatId is allowed to trigger
+// the alert loop. alertSourceSet is a whitelist; empty means every source
+// triggers (legacy behavior). Both the plain-message and the album path go
+// through here so the whitelist can't be bypassed by one of them.
+func shouldAlert(alertSourceSet map[int64]bool, sourceChatId int64) bool {
+	return len(alertSourceSet) == 0 || alertSourceSet[sourceChatId]
+}
+
 // startAlert starts (or resets) a "1" alert loop for a chat id. intervalSeconds
 // and maxCount come from config; together they bound the alert window.
 func startAlert(c *client.Client, chatId int64, intervalSeconds, maxCount int) {

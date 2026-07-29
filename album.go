@@ -13,9 +13,12 @@ import (
 const albumFlushDelay = time.Second
 
 // albumBuffer collects the converted contents of one media group (album).
+// alertAllowed is decided from the first item's source chat (all items of one
+// media group come from the same chat) and gates the alert on flush.
 type albumBuffer struct {
-	timer    *time.Timer
-	contents []client.InputMessageContent
+	timer        *time.Timer
+	contents     []client.InputMessageContent
+	alertAllowed bool
 }
 
 var (
@@ -25,14 +28,14 @@ var (
 
 // bufferAlbumMessage appends one album item to its buffer and (re)arms the flush
 // timer. The source label is applied to the first item only.
-func bufferAlbumMessage(c *client.Client, cfg Config, albumId int64, content client.MessageContent, prefix string) {
+func bufferAlbumMessage(c *client.Client, cfg Config, albumId int64, content client.MessageContent, prefix string, alertAllowed bool) {
 	albumMu.Lock()
 	defer albumMu.Unlock()
 
 	buf, ok := pendingAlbums[albumId]
 	itemPrefix := "" // only the first item carries the "【来源】" label
 	if !ok {
-		buf = &albumBuffer{}
+		buf = &albumBuffer{alertAllowed: alertAllowed}
 		pendingAlbums[albumId] = buf
 		itemPrefix = prefix
 	}
@@ -82,6 +85,11 @@ func flushAlbum(c *client.Client, cfg Config, albumId int64) {
 		}
 	}
 
+	// Same alert-source whitelist as the plain-message path: a source that isn't
+	// whitelisted still gets forwarded, it just doesn't start the "1" loop.
+	if !buf.alertAllowed {
+		return
+	}
 	for _, id := range cfg.AlertChatIds {
 		startAlert(c, id, cfg.AlertIntervalSeconds, cfg.AlertMaxCount)
 	}
